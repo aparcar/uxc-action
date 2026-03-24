@@ -1,0 +1,35 @@
+# A new way to run containers on OpenWrt
+Since their introduction in the early 2000's, Linux containers have become the de-facto standard when it comes to operate and manage network services. They enable an independent software life-cycle, allow isolating from the host and other containerized processes, and fine-grained control over resource usage.
+OpenWrt became the go-to operating system for Linux-based network appliances which are typically headless (ie. no display or human input devices) and have only a limited amount of storage capacity.
+Adding containers into the mix of software running on OpenWrt will allow 3rd-party components to be deployed directly on a device without needing to be adapted to the specific hardware or software environment.
+
+### Why not use an existing container runtime?
+Container runtime environments such as Docker are resource hungry beasts with an overwhelming amount of features. In embedded environments storage space as well as memory is often very limited, so both the runtime environment as well as the containers themselves and the way they are stored on the device need to be designed having those limitations in mind.
+
+### Software component overview
+ * **procd-ujail**
+Add-on for OpenWrt's **procd** preparing namespaces, cgroups, seccomp, ... before launching a process. When installed allows procd to directly launch OCI runtime bundles as well as launching services in sandboxes (=jails).
+
+ * **uxc**
+A OCI container management front-end communicating with procd over ubus. Immitates the command line semantics of `runc` or `crun` OCI runtime.
+
+ * **uvol**
+A storage management abstraction and front-end transparently working on top of either LVM2 or UBI.
+
+ * **netifd**
+A separate instance of OpenWrt's network interface management daemon is used to dynamically manage network connectivity for containers having their own network namespace.
+
+ * **apk** (Alpine Package Keeper)
+A package manager originally written for Alpine Linux. With a few enhancements it was made fit to manage containers in a way suitable for resource constraint environments.
+
+### Storage
+Instead of downloading and extracting archives (tar.gz and such), squashfs disk images are downloaded on-the-fly to storage volumes. No intermediate storage for the downloaded archive is needed and it doesn't need to be extracted in order to launch the container. An overlay filesystem (either in RAM or persistent in another storage volume) can be used to allow the containerized process to write things to the filesystem.
+While some devices come with rather generously sized eMMC disks, others have less than a gigabyte of NAND flash. In order to allow using containers on both, **uvol** uses either LVM2 (for eMMC) or UBI (for raw NAND) to store the read-only squashfs images as well as read-write filesystems (ext4 or f2fs on LVM volumes, UBIFS on UBI volumes).
+
+### Network
+Containers may have their own network namespace and hence we need to take care of setting up veth interfaces.
+In contrast to servers in a datacentre serving container images using a static network setup, OpenWrt is often used in dynamic environments and hence also the container network interfaces need to be managed dynamically.
+Being a network-centric OS, OpenWrt got **netifd** which dynamically handles the configuration of interfaces on layer-2 and layer-3. Hence, instead of reinventing the wheel for containers, the existing OpenWrt infrastructure is extended to setup network connectivity for containers (e.g. using DHCP).
+
+### Management and life-cycle
+The Alpine Package Keeper (**apk**) is a state-of-the-art package manager for Linux systems which has been extended to allow serving packages which deploy container images directly into storage volumes using **uvol** (instead of installing files into a the root filesystem). Hence the life-cycle of a container image can be controlled just like any other software package.

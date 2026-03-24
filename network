@@ -1,0 +1,34 @@
+
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config globals 'globals'
+	option ula_prefix 'fd00:142a:8f39::/48'
+
+config device
+	option name 'br-lan'
+	option type 'bridge'
+	list ports 'eth0'
+	list ports 'vhost0'
+
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'dhcp'
+
+config device 'veth0'
+        option type 'veth'
+        option name 'vhost0'
+        option peer_name 'host0'
+    
+config interface 'virt0'
+        option ifname 'host0'
+        option proto 'static'
+        option ipaddr '10.0.2.7'
+        option netmask '255.255.255.0'
+        option gateway '10.0.2.2'
+        option dns '10.0.2.2'
+        option jail 'pihole'
+
