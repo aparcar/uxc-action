@@ -24,9 +24,3 @@ containers:
       - CAP_SYS_NICE
       - CAP_CHOWN
       - CAP_FOWNER
-
-  - name: homeassistant
-    version: "2026.3.4"
-    origin: ghcr.io/home-assistant/home-assistant:stable
-    ports:
-      - 8123:8123/tcp
