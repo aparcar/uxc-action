@@ -33,6 +33,7 @@ for arch in $ARCHES; do
 		origin=$(yq ".containers[$i].origin" "$list")
 		ports=$(yq ".containers[$i].ports // [] | join(\",\")" "$list")
 		caps=$(yq ".containers[$i].caps // [] | join(\",\")" "$list")
+		allow_new_privs=$(yq ".containers[$i].allow_new_privs // false" "$list")
 
 		echo ""
 		echo "================================================================"
@@ -42,6 +43,7 @@ for arch in $ARCHES; do
 		_extra_args=""
 		[ -n "$ports" ] && _extra_args="$_extra_args --ports $ports"
 		[ -n "$caps" ] && _extra_args="$_extra_args --caps $caps"
+		[ "$allow_new_privs" = "true" ] && _extra_args="$_extra_args --allow-new-privs"
 
 		if "$REPO_ROOT/mkpkg.sh" \
 			--from-docker "$origin" \

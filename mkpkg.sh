@@ -39,6 +39,7 @@ Options:
   --caps <c1,c2,...>      Additional capabilities beyond defaults
   --caps-file <file>      JSON file replacing default capability list
   --no-network            Skip UCI network setup in postinst
+  --allow-new-privs       Set noNewPrivileges to false in OCI config
   --ports <mapping>       Port forwards: host_port:container_port/proto,...
                           Example: 80:80/tcp,53:53/udp
   --overlay-path <path>   Persistent write overlay path
@@ -162,6 +163,13 @@ generate_oci_config() {
 	_gc_hash="$2"
 	_gc_caps="$3"
 	_gc_outfile="$4"
+	_gc_no_new_privs="$5"
+
+	if [ "$_gc_no_new_privs" = "0" ]; then
+		_gc_nnp="true"
+	else
+		_gc_nnp="false"
+	fi
 
 	jq -n \
 		--argjson args "$IMG_ARGS" \
@@ -172,6 +180,7 @@ generate_oci_config() {
 		--arg cwd "$IMG_CWD" \
 		--argjson uid "$IMG_UID" \
 		--argjson gid "$IMG_GID" \
+		--argjson nnp "$_gc_nnp" \
 		'{
 			ociVersion: "1.0.0",
 			process: {
@@ -188,7 +197,7 @@ generate_oci_config() {
 					ambient: $caps
 				},
 				rlimits: [{ type: "RLIMIT_NOFILE", hard: 1024, soft: 1024 }],
-				noNewPrivileges: true
+				noNewPrivileges: $nnp
 			},
 			root: {
 				path: ("/tmp/run/uvol/" + $hash),
@@ -512,7 +521,7 @@ package_from_docker() {
 
 	_pd_caps="$(resolve_caps "$OPT_CAPS" "$OPT_CAPS_FILE")"
 
-	generate_oci_config "$ARG_NAME" "$VOLUME_HASH" "$_pd_caps" "$_pd_artifactdir/config.json"
+	generate_oci_config "$ARG_NAME" "$VOLUME_HASH" "$_pd_caps" "$_pd_artifactdir/config.json" "$OPT_ALLOW_NEW_PRIVS"
 	generate_uxc_metadata "$ARG_NAME" "$VOLUME_HASH" "$OPT_OVERLAY_PATH" "$OPT_OVERLAY_SIZE" "$_pd_artifactdir/$ARG_NAME.json"
 
 	_pd_stagedir="$_pd_workdir/staging"
@@ -572,6 +581,7 @@ OPT_ORIGIN=""
 OPT_CAPS=""
 OPT_CAPS_FILE=""
 OPT_NO_NETWORK="0"
+OPT_ALLOW_NEW_PRIVS="0"
 OPT_PORTS=""
 OPT_OVERLAY_PATH=""
 OPT_OVERLAY_SIZE="$DEFAULT_OVERLAY_SIZE"
@@ -592,6 +602,7 @@ while [ $# -gt 0 ]; do
 		--caps)         OPT_CAPS="$2"; shift 2 ;;
 		--caps-file)    OPT_CAPS_FILE="$2"; shift 2 ;;
 		--no-network)   OPT_NO_NETWORK="1"; shift ;;
+		--allow-new-privs) OPT_ALLOW_NEW_PRIVS="1"; shift ;;
 		--ports)        OPT_PORTS="$2"; shift 2 ;;
 		--overlay-path) OPT_OVERLAY_PATH="$2"; shift 2 ;;
 		--overlay-size) OPT_OVERLAY_SIZE="$2"; shift 2 ;;
