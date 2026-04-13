@@ -318,44 +318,45 @@ EOB
 fi
 STATIC
 
-	# Per-container veth setup (name is substituted)
+	# Per-container network + firewall setup (name is substituted)
+	# Each container gets:
+	#   - its own veth pair (h-<name> / v-<name>)
+	#   - its own firewall zone (container_<name>)
+	#   - forwarding rules (container → wan, lan → container)
+	#   - port redirects if --ports was specified
 	cat >> "$_gp_outfile" <<EOF
 
-if [ "\$(uci -q get network.dev_$_gp_name)" != "device" ]; then
+if [ "\$(uci -q get network.container_dev_$_gp_name)" != "device" ]; then
+
 uci batch <<EOB
-set network.dev_$_gp_name='device'
-set network.dev_$_gp_name.type='veth'
-set network.dev_$_gp_name.name="h-$_gp_name"
-set network.dev_$_gp_name.peer_name="v-$_gp_name"
-set network.virt_$_gp_name='interface'
-set network.virt_$_gp_name.device="v-$_gp_name"
-set network.virt_$_gp_name.proto='dhcp'
-set network.virt_$_gp_name.jail="$_gp_name"
-set network.virt_$_gp_name.jail_device='eth0'
-add_list network.dev_virt.ports="h-$_gp_name"
+set network.container_dev_$_gp_name='device'
+set network.container_dev_$_gp_name.type='veth'
+set network.container_dev_$_gp_name.name='h-$_gp_name'
+set network.container_dev_$_gp_name.peer_name='v-$_gp_name'
+set network.container_$_gp_name='interface'
+set network.container_$_gp_name.device='v-$_gp_name'
+set network.container_$_gp_name.proto='dhcp'
+set network.container_$_gp_name.jail='$_gp_name'
+set network.container_$_gp_name.jail_device='eth0'
+add_list network.dev_virt.ports='h-$_gp_name'
 commit network
 EOB
-fi
 
-if [ "\$(uci -q get firewall.virt_zone)" != "zone" ]; then
 uci batch <<EOB
-set firewall.virt_zone='zone'
-set firewall.virt_zone.name='virt'
-set firewall.virt_zone.network='virt'
-set firewall.virt_zone.input='ACCEPT'
-set firewall.virt_zone.output='ACCEPT'
-set firewall.virt_zone.forward='ACCEPT'
-set firewall.virt_fwd_wan='forwarding'
-set firewall.virt_fwd_wan.src='virt'
-set firewall.virt_fwd_wan.dest='wan'
-set firewall.virt_fwd_lan='forwarding'
-set firewall.virt_fwd_lan.src='lan'
-set firewall.virt_fwd_lan.dest='virt'
+set firewall.container_zone_$_gp_name='zone'
+set firewall.container_zone_$_gp_name.name='container_$_gp_name'
+set firewall.container_zone_$_gp_name.network='container_$_gp_name'
+set firewall.container_zone_$_gp_name.input='ACCEPT'
+set firewall.container_zone_$_gp_name.output='ACCEPT'
+set firewall.container_zone_$_gp_name.forward='REJECT'
+set firewall.container_fwd_${_gp_name}_wan='forwarding'
+set firewall.container_fwd_${_gp_name}_wan.src='container_$_gp_name'
+set firewall.container_fwd_${_gp_name}_wan.dest='wan'
+set firewall.container_fwd_lan_${_gp_name}='forwarding'
+set firewall.container_fwd_lan_${_gp_name}.src='lan'
+set firewall.container_fwd_lan_${_gp_name}.dest='container_$_gp_name'
 commit firewall
 EOB
-fi
-
-reload_config
 EOF
 
 	# Append per-container port redirects if --ports was specified
@@ -365,15 +366,15 @@ EOF
 			_host_port="${_portmap%%:*}"
 			_cont_port="${_portmap##*:}"
 			_proto="${_proto:-tcp}"
-			_redir_name="${_gp_name}_p${_gp_idx}"
+			_redir_name="container_rdr_${_gp_name}_p${_gp_idx}"
 			_gp_idx=$((_gp_idx + 1))
 			cat >> "$_gp_outfile" <<REDIR
 uci batch <<EOB
 set firewall.${_redir_name}='redirect'
-set firewall.${_redir_name}.name='${_gp_name} port ${_host_port}'
+set firewall.${_redir_name}.name='container ${_gp_name} port ${_host_port}'
 set firewall.${_redir_name}.src='lan'
 set firewall.${_redir_name}.src_dport='${_host_port}'
-set firewall.${_redir_name}.dest='virt'
+set firewall.${_redir_name}.dest='container_${_gp_name}'
 set firewall.${_redir_name}.dest_port='${_cont_port}'
 set firewall.${_redir_name}.proto='${_proto}'
 set firewall.${_redir_name}.target='DNAT'
@@ -381,8 +382,14 @@ commit firewall
 EOB
 REDIR
 		done
-		echo "reload_config" >> "$_gp_outfile"
 	fi
+
+	# Close the if block and reload
+	cat >> "$_gp_outfile" <<'EOF'
+fi
+
+reload_config
+EOF
 }
 
 generate_prerm() {
@@ -391,7 +398,21 @@ generate_prerm() {
 
 	cat > "$_gr_outfile" <<EOF
 #!/bin/sh
-uxc kill $_gr_name 9
+uxc kill $_gr_name 9 2>/dev/null
+
+# Remove all container_ prefixed UCI sections for this container
+for section in \$(uci show firewall 2>/dev/null | grep -o "firewall\.container_[^.]*_${_gr_name}[^.=]*" | cut -d. -f2 | sort -u); do
+	uci -q delete "firewall.\$section"
+done
+uci -q delete firewall.container_zone_$_gr_name
+uci -q commit firewall
+
+uci -q del_list network.dev_virt.ports='h-$_gr_name'
+uci -q delete network.container_$_gr_name
+uci -q delete network.container_dev_$_gr_name
+uci -q commit network
+
+reload_config
 EOF
 }
 
