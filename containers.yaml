@@ -10,6 +10,7 @@ containers:
   - name: pihole
     version: "2026.02.0"
     origin: docker.io/pihole/pihole
+    network: dedicated
     allow_new_privs: true
     ports:
       - 80:80/tcp

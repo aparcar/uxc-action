@@ -135,10 +135,11 @@ mkpkg.sh --from-dir <dir>    [OPTIONS] <name> <version>
 | `--origin <url>` | Docker URL or `local` | Origin URL for APK metadata |
 | `--caps <c1,c2,...>` | — | Additional Linux capabilities beyond the defaults |
 | `--caps-file <file>` | — | JSON file replacing the default capability list entirely |
-| `--no-network` | — | Skip UCI network setup in the post-install script |
+| `--network <mode>` | `dedicated` | Network mode: `dedicated`, `bridged`, `host`, or `none` (see below) |
 | `--overlay-path <path>` | — | Persistent write overlay path |
 | `--overlay-size <size>` | `50M` | Temp overlay size (ignored if `--overlay-path` is set) |
-| `--ports <mapping>` | — | Port forwards: `host:container/proto,...` (e.g. `80:80/tcp,53:53/udp`) |
+| `--ports <mapping>` | — | Port forwards (`dedicated` mode only): `host:container/proto,...` |
+| `--allow-new-privs` | — | Set `noNewPrivileges` to false in OCI config |
 | `--maintainer <string>` | — | Package maintainer |
 
 ### Capabilities
@@ -188,13 +189,20 @@ containers:
   - name: pihole
     version: "2026.02.0"
     origin: docker.io/pihole/pihole
+    network: dedicated
+    allow_new_privs: true
     ports:
       - 80:80/tcp
       - 53:53/udp
+      - 53:53/tcp
     caps:
       - CAP_NET_ADMIN
       - CAP_NET_RAW
+      - CAP_CHOWN
+      - ...
 ```
+
+Supported fields per container: `name`, `version`, `origin`, `network`, `ports`, `caps`, `allow_new_privs`.
 
 ## APK Package Layout
 
@@ -210,14 +218,40 @@ Plus post-install and pre-remove scripts that configure UCI networking (virtual 
 
 ## Networking
 
-The post-install script automatically sets up:
+Containers support four network modes via `--network <mode>`:
 
-- A `br-virt` bridge on `10.0.0.0/24` with DHCP (shared across all containers)
-- Per-container veth pair: `h-<name>` (host side, bridged) and `v-<name>` (container side, DHCP client)
-- A `virt` firewall zone with forwarding to/from `lan` and `wan`
+### `dedicated` (default)
+
+Each container gets its own isolated network with a dedicated veth pair on a separate bridge.
+
+- Creates a `br-virt` bridge on `10.0.0.0/24` with a DHCP server (shared infrastructure, created once)
+- Per-container veth pair: `h-<name>` (host side, bridged to `br-virt`) and `v-<name>` (container side, DHCP)
+- Per-container firewall zone (`container_<name>`) with forwarding to `wan` and from `lan`
 - Per-container port redirects (DNAT) when `--ports` is specified
 
-Use `--no-network` to skip this if the container doesn't need network access or you manage networking separately.
+All UCI sections use the `container_` prefix for easy identification and are fully cleaned up on package removal. Port forwarding rules are editable in `/etc/config/firewall`.
+
+### `bridged`
+
+The container's veth pair is added directly to `br-lan`. The container gets an IP via the LAN's DHCP server and appears as a regular device on the local network.
+
+- No separate bridge or firewall zone
+- No port forwarding needed — the container is directly reachable on the LAN
+
+### `host`
+
+The container shares the host's network namespace. No network isolation — the container sees and can bind to all host interfaces.
+
+- No `network` namespace in the OCI config
+- No veth pair or bridge setup
+- Useful for containers that need full access to the host's network stack
+
+### `none`
+
+The container has its own network namespace but no interfaces are created. Only the loopback interface is available.
+
+- Useful for containers that manage their own networking or don't need network access
+- An external tool or script can attach interfaces to the container's namespace later
 
 ## Supported Architectures
 

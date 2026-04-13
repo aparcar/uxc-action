@@ -38,9 +38,14 @@ Options:
   --origin <url>          Origin URL for APK metadata
   --caps <c1,c2,...>      Additional capabilities beyond defaults
   --caps-file <file>      JSON file replacing default capability list
-  --no-network            Skip UCI network setup in postinst
+  --network <mode>        Network mode (default: dedicated)
+                          dedicated — own veth, br-virt bridge, own firewall zone
+                          bridged   — veth in br-lan, LAN DHCP
+                          host      — share host network namespace
+                          none      — own netns, no interfaces
   --allow-new-privs       Set noNewPrivileges to false in OCI config
-  --ports <mapping>       Port forwards: host_port:container_port/proto,...
+  --ports <mapping>       Port forwards (dedicated mode only):
+                          host_port:container_port/proto,...
                           Example: 80:80/tcp,53:53/udp
   --overlay-path <path>   Persistent write overlay path
   --overlay-size <size>   Temp overlay size (default: 50M)
@@ -164,11 +169,19 @@ generate_oci_config() {
 	_gc_caps="$3"
 	_gc_outfile="$4"
 	_gc_no_new_privs="$5"
+	_gc_network="$6"
 
 	if [ "$_gc_no_new_privs" = "0" ]; then
 		_gc_nnp="true"
 	else
 		_gc_nnp="false"
+	fi
+
+	# host mode: no network namespace; all others get their own
+	if [ "$_gc_network" = "host" ]; then
+		_gc_namespaces='[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"}]'
+	else
+		_gc_namespaces='[{"type":"pid"},{"type":"network"},{"type":"ipc"},{"type":"uts"},{"type":"mount"}]'
 	fi
 
 	jq -n \
@@ -181,6 +194,7 @@ generate_oci_config() {
 		--argjson uid "$IMG_UID" \
 		--argjson gid "$IMG_GID" \
 		--argjson nnp "$_gc_nnp" \
+		--argjson namespaces "$_gc_namespaces" \
 		'{
 			ociVersion: "1.0.0",
 			process: {
@@ -214,13 +228,7 @@ generate_oci_config() {
 				resources: {
 					devices: [{ allow: false, access: "rwm" }]
 				},
-				namespaces: [
-					{ type: "pid" },
-					{ type: "network" },
-					{ type: "ipc" },
-					{ type: "uts" },
-					{ type: "mount" }
-				],
+				namespaces: $namespaces,
 				maskedPaths: [
 					"/proc/acpi", "/proc/asound", "/proc/kcore", "/proc/keys",
 					"/proc/latency_stats", "/proc/timer_list", "/proc/timer_stats",
@@ -240,59 +248,93 @@ generate_uxc_metadata() {
 	_gm_overlay_path="$3"
 	_gm_overlay_size="$4"
 	_gm_outfile="$5"
+	_gm_network="$6"
+
+	# Build the network JSON based on mode
+	case "$_gm_network" in
+		dedicated)
+			_gm_net='{"host0":{"type":"bridged","bridge":"br-virt"}}' ;;
+		bridged)
+			_gm_net='{"host0":{"type":"bridged","bridge":"br-lan"}}' ;;
+		host|none)
+			_gm_net='{}' ;;
+	esac
 
 	if [ -n "$_gm_overlay_path" ]; then
-		jq -n \
-			--arg name "$_gm_name" \
-			--arg path "/usr/share/containers/$_gm_name/" \
-			--arg hash "$_gm_hash" \
-			--arg overlay "$_gm_overlay_path" \
-			'{
-				name: $name,
-				path: $path,
-				autostart: true,
-				"write-overlay-path": $overlay,
-				volumes: [$hash],
-				network: {
-					host0: { type: "bridged", bridge: "br-virt" }
-				}
-			}' > "$_gm_outfile"
+		_gm_overlay_key="write-overlay-path"
+		_gm_overlay_val="$_gm_overlay_path"
 	else
-		jq -n \
-			--arg name "$_gm_name" \
-			--arg path "/usr/share/containers/$_gm_name/" \
-			--arg hash "$_gm_hash" \
-			--arg size "$_gm_overlay_size" \
-			'{
-				name: $name,
-				path: $path,
-				autostart: true,
-				"temp-overlay-size": $size,
-				volumes: [$hash],
-				network: {
-					host0: { type: "bridged", bridge: "br-virt" }
-				}
-			}' > "$_gm_outfile"
+		_gm_overlay_key="temp-overlay-size"
+		_gm_overlay_val="$_gm_overlay_size"
 	fi
+
+	jq -n \
+		--arg name "$_gm_name" \
+		--arg path "/usr/share/containers/$_gm_name/" \
+		--arg hash "$_gm_hash" \
+		--arg overlay_key "$_gm_overlay_key" \
+		--arg overlay_val "$_gm_overlay_val" \
+		--argjson network "$_gm_net" \
+		'{
+			name: $name,
+			path: $path,
+			autostart: true,
+			($overlay_key): $overlay_val,
+			volumes: [$hash]
+		} + (if ($network | length) > 0 then { network: $network } else {} end)' \
+		> "$_gm_outfile"
 }
 
 generate_postinst() {
 	_gp_name="$1"
-	_gp_no_network="$2"
+	_gp_network="$2"
 	_gp_outfile="$3"
 	_gp_ports="$4"
 
-	if [ "$_gp_no_network" = "1" ]; then
-		cat > "$_gp_outfile" <<'EOF'
+	cat > "$_gp_outfile" <<'EOF'
 #!/bin/sh
+EOF
+
+	case "$_gp_network" in
+		host|none)
+			# No network config needed
+			echo "reload_config" >> "$_gp_outfile"
+			return
+			;;
+
+		bridged)
+			# veth in br-lan, gets LAN DHCP address
+			cat >> "$_gp_outfile" <<EOF
+
+if [ "\$(uci -q get network.container_dev_$_gp_name)" != "device" ]; then
+uci batch <<EOB
+set network.container_dev_$_gp_name='device'
+set network.container_dev_$_gp_name.type='veth'
+set network.container_dev_$_gp_name.name='h-$_gp_name'
+set network.container_dev_$_gp_name.peer_name='v-$_gp_name'
+set network.container_$_gp_name='interface'
+set network.container_$_gp_name.device='v-$_gp_name'
+set network.container_$_gp_name.proto='dhcp'
+set network.container_$_gp_name.jail='$_gp_name'
+set network.container_$_gp_name.jail_device='eth0'
+add_list network.@device[0].ports='h-$_gp_name'
+commit network
+EOB
+fi
+
 reload_config
 EOF
-		return
-	fi
+			return
+			;;
 
-	# Static bridge + DHCP setup (no variable expansion)
-	cat > "$_gp_outfile" <<'STATIC'
-#!/bin/sh
+		dedicated)
+			;;  # fall through to full setup below
+	esac
+
+	# --- dedicated mode ---
+
+	# Shared br-virt bridge + DHCP server (created once)
+	cat >> "$_gp_outfile" <<'STATIC'
 
 if [ "$(uci -q get network.dev_virt)" != "device" ]; then
 uci batch <<EOB
@@ -325,14 +367,21 @@ add_list dhcp.virt.ra_flags='other-config'
 commit dhcp
 EOB
 fi
+
+if [ "$(uci -q get firewall.container_virt_zone)" != "zone" ]; then
+uci batch <<EOB
+set firewall.container_virt_zone='zone'
+set firewall.container_virt_zone.name='container_virt'
+set firewall.container_virt_zone.network='virt'
+set firewall.container_virt_zone.input='ACCEPT'
+set firewall.container_virt_zone.output='ACCEPT'
+set firewall.container_virt_zone.forward='ACCEPT'
+commit firewall
+EOB
+fi
 STATIC
 
-	# Per-container network + firewall setup (name is substituted)
-	# Each container gets:
-	#   - its own veth pair (h-<name> / v-<name>)
-	#   - its own firewall zone (container_<name>)
-	#   - forwarding rules (container → wan, lan → container)
-	#   - port redirects if --ports was specified
+	# Per-container veth + firewall zone
 	cat >> "$_gp_outfile" <<EOF
 
 if [ "\$(uci -q get network.container_dev_$_gp_name)" != "device" ]; then
@@ -368,7 +417,7 @@ commit firewall
 EOB
 EOF
 
-	# Append per-container port redirects if --ports was specified
+	# Port redirects (dedicated mode only)
 	if [ -n "$_gp_ports" ]; then
 		_gp_idx=0
 		echo "$_gp_ports" | tr ',' '\n' | while IFS='/' read -r _portmap _proto; do
@@ -404,12 +453,30 @@ EOF
 generate_prerm() {
 	_gr_name="$1"
 	_gr_outfile="$2"
+	_gr_network="$3"
 
 	cat > "$_gr_outfile" <<EOF
 #!/bin/sh
 uxc kill $_gr_name 9 2>/dev/null
+EOF
 
-# Remove all container_ prefixed UCI sections for this container
+	case "$_gr_network" in
+		host|none)
+			# No network config to clean up
+			;;
+		bridged)
+			cat >> "$_gr_outfile" <<EOF
+
+uci -q del_list network.@device[0].ports='h-$_gr_name'
+uci -q delete network.container_$_gr_name
+uci -q delete network.container_dev_$_gr_name
+uci -q commit network
+EOF
+			;;
+		dedicated)
+			cat >> "$_gr_outfile" <<EOF
+
+# Remove all container_ prefixed firewall sections for this container
 for section in \$(uci show firewall 2>/dev/null | grep -o "firewall\.container_[^.]*_${_gr_name}[^.=]*" | cut -d. -f2 | sort -u); do
 	uci -q delete "firewall.\$section"
 done
@@ -420,9 +487,11 @@ uci -q del_list network.dev_virt.ports='h-$_gr_name'
 uci -q delete network.container_$_gr_name
 uci -q delete network.container_dev_$_gr_name
 uci -q commit network
-
-reload_config
 EOF
+			;;
+	esac
+
+	echo "reload_config" >> "$_gr_outfile"
 }
 
 assemble_file_tree() {
@@ -521,15 +590,15 @@ package_from_docker() {
 
 	_pd_caps="$(resolve_caps "$OPT_CAPS" "$OPT_CAPS_FILE")"
 
-	generate_oci_config "$ARG_NAME" "$VOLUME_HASH" "$_pd_caps" "$_pd_artifactdir/config.json" "$OPT_ALLOW_NEW_PRIVS"
-	generate_uxc_metadata "$ARG_NAME" "$VOLUME_HASH" "$OPT_OVERLAY_PATH" "$OPT_OVERLAY_SIZE" "$_pd_artifactdir/$ARG_NAME.json"
+	generate_oci_config "$ARG_NAME" "$VOLUME_HASH" "$_pd_caps" "$_pd_artifactdir/config.json" "$OPT_ALLOW_NEW_PRIVS" "$OPT_NETWORK"
+	generate_uxc_metadata "$ARG_NAME" "$VOLUME_HASH" "$OPT_OVERLAY_PATH" "$OPT_OVERLAY_SIZE" "$_pd_artifactdir/$ARG_NAME.json" "$OPT_NETWORK"
 
 	_pd_stagedir="$_pd_workdir/staging"
 	assemble_file_tree "$ARG_NAME" "$VOLUME_HASH" "$SQUASHFS_PATH" \
 		"$_pd_artifactdir/config.json" "$_pd_artifactdir/$ARG_NAME.json" "$_pd_stagedir"
 
-	generate_postinst "$ARG_NAME" "$OPT_NO_NETWORK" "$_pd_workdir/postinst.sh" "$OPT_PORTS"
-	generate_prerm "$ARG_NAME" "$_pd_workdir/prerm.sh"
+	generate_postinst "$ARG_NAME" "$OPT_NETWORK" "$_pd_workdir/postinst.sh" "$OPT_PORTS"
+	generate_prerm "$ARG_NAME" "$_pd_workdir/prerm.sh" "$OPT_NETWORK"
 
 	_pd_apk="$OPT_OUTPUT_DIR/container-${ARG_NAME}-${ARG_VERSION}.apk"
 	build_apk "$ARG_NAME" "$ARG_VERSION" "$OPT_ARCH" "$_pd_stagedir" \
@@ -557,8 +626,8 @@ package_from_dir() {
 
 	make_tmpdir
 
-	generate_postinst "$ARG_NAME" "$OPT_NO_NETWORK" "$_tmpdir/postinst.sh" "$OPT_PORTS"
-	generate_prerm "$ARG_NAME" "$_tmpdir/prerm.sh"
+	generate_postinst "$ARG_NAME" "$OPT_NETWORK" "$_tmpdir/postinst.sh" "$OPT_PORTS"
+	generate_prerm "$ARG_NAME" "$_tmpdir/prerm.sh" "$OPT_NETWORK"
 
 	_pf_apk="$OPT_OUTPUT_DIR/container-${ARG_NAME}-${ARG_VERSION}.apk"
 	build_apk "$ARG_NAME" "$ARG_VERSION" "$OPT_ARCH" "$_pf_dir" \
@@ -580,7 +649,7 @@ OPT_BUILD_DIR=""
 OPT_ORIGIN=""
 OPT_CAPS=""
 OPT_CAPS_FILE=""
-OPT_NO_NETWORK="0"
+OPT_NETWORK="dedicated"
 OPT_ALLOW_NEW_PRIVS="0"
 OPT_PORTS=""
 OPT_OVERLAY_PATH=""
@@ -601,7 +670,7 @@ while [ $# -gt 0 ]; do
 		--origin)       OPT_ORIGIN="$2"; shift 2 ;;
 		--caps)         OPT_CAPS="$2"; shift 2 ;;
 		--caps-file)    OPT_CAPS_FILE="$2"; shift 2 ;;
-		--no-network)   OPT_NO_NETWORK="1"; shift ;;
+		--network)      OPT_NETWORK="$2"; shift 2 ;;
 		--allow-new-privs) OPT_ALLOW_NEW_PRIVS="1"; shift ;;
 		--ports)        OPT_PORTS="$2"; shift 2 ;;
 		--overlay-path) OPT_OVERLAY_PATH="$2"; shift 2 ;;
@@ -627,6 +696,14 @@ done
 [ -n "$ARG_VERSION" ] || usage
 [ -n "$OPT_DOCKER_URL" ] || [ -n "$OPT_FROM_DIR" ] || die "one of --from-docker or --from-dir is required"
 [ -n "$OPT_DOCKER_URL" ] && [ -n "$OPT_FROM_DIR" ] && die "--from-docker and --from-dir are mutually exclusive"
+
+case "$OPT_NETWORK" in
+	dedicated|bridged|host|none) ;;
+	*) die "unknown network mode: $OPT_NETWORK (must be dedicated, bridged, host, or none)" ;;
+esac
+
+[ -n "$OPT_PORTS" ] && [ "$OPT_NETWORK" != "dedicated" ] && \
+	die "--ports is only supported with --network dedicated"
 
 # Defaults that depend on other options
 [ -z "$OPT_SIGN_KEY" ] && OPT_SIGN_KEY="$OPT_SDK_PATH/private-key.pem"

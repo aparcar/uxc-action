@@ -34,6 +34,7 @@ for arch in $ARCHES; do
 		ports=$(yq ".containers[$i].ports // [] | join(\",\")" "$list")
 		caps=$(yq ".containers[$i].caps // [] | join(\",\")" "$list")
 		allow_new_privs=$(yq ".containers[$i].allow_new_privs // false" "$list")
+		network=$(yq ".containers[$i].network // \"dedicated\"" "$list")
 
 		echo ""
 		echo "================================================================"
@@ -44,6 +45,7 @@ for arch in $ARCHES; do
 		[ -n "$ports" ] && _extra_args="$_extra_args --ports $ports"
 		[ -n "$caps" ] && _extra_args="$_extra_args --caps $caps"
 		[ "$allow_new_privs" = "true" ] && _extra_args="$_extra_args --allow-new-privs"
+		[ "$network" != "dedicated" ] && _extra_args="$_extra_args --network $network"
 
 		if "$REPO_ROOT/mkpkg.sh" \
 			--from-docker "$origin" \
