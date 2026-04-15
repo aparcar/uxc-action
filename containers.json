@@ -1,0 +1,37 @@
+{
+  "containers": [
+    {
+      "name": "alpine",
+      "version": "3.21.3",
+      "origin": "docker.io/library/alpine:3.21"
+    },
+    {
+      "name": "debian",
+      "version": "12.13",
+      "origin": "docker.io/library/debian:12-slim"
+    },
+    {
+      "name": "pihole",
+      "version": "2026.02.0",
+      "origin": "docker.io/pihole/pihole",
+      "network": "dedicated",
+      "allow_new_privs": true,
+      "ports": [
+        "80:80/tcp",
+        "53:53/udp",
+        "53:53/tcp"
+      ],
+      "caps": [
+        "CAP_DAC_OVERRIDE",
+        "CAP_NET_ADMIN",
+        "CAP_NET_RAW",
+        "CAP_SETFCAP",
+        "CAP_SETUID",
+        "CAP_SETGID",
+        "CAP_SYS_NICE",
+        "CAP_CHOWN",
+        "CAP_FOWNER"
+      ]
+    }
+  ]
+}

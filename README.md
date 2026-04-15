@@ -107,7 +107,7 @@ This pulls the image via podman, converts the filesystem to squashfs, generates 
 ./build.sh
 ```
 
-Reads `containers.yaml` and builds each container for all configured architectures.
+Reads `containers.json` and builds each container for all configured architectures.
 
 ## mkpkg.sh Usage
 
@@ -165,7 +165,7 @@ For containers that need more (e.g. pihole needs `CAP_NET_ADMIN`, `CAP_NET_RAW`,
 - `build.sh` — Orchestrator: builds all containers for all architectures
 - `index.sh` — Generates APK feed with `packages.adb` for GitHub Pages
 - `config.env` — Shared configuration (SDK path, arches, feed URL)
-- `containers.yaml` — Container definitions (name, version, origin, ports, caps)
+- `containers.json` — Container definitions (name, version, origin, ports, caps)
 
 ### GitHub Actions
 
@@ -179,27 +179,25 @@ Pushes to `main`/`master` automatically build all containers for all architectur
 
 ### Container Definitions
 
-```yaml
-# containers.yaml
-containers:
-  - name: alpine
-    version: "3.21.3"
-    origin: docker.io/library/alpine:3.21
-
-  - name: pihole
-    version: "2026.02.0"
-    origin: docker.io/pihole/pihole
-    network: dedicated
-    allow_new_privs: true
-    ports:
-      - 80:80/tcp
-      - 53:53/udp
-      - 53:53/tcp
-    caps:
-      - CAP_NET_ADMIN
-      - CAP_NET_RAW
-      - CAP_CHOWN
-      - ...
+```json
+{
+  "containers": [
+    {
+      "name": "alpine",
+      "version": "3.21.3",
+      "origin": "docker.io/library/alpine:3.21"
+    },
+    {
+      "name": "pihole",
+      "version": "2026.02.0",
+      "origin": "docker.io/pihole/pihole",
+      "network": "dedicated",
+      "allow_new_privs": true,
+      "ports": ["80:80/tcp", "53:53/udp", "53:53/tcp"],
+      "caps": ["CAP_NET_ADMIN", "CAP_NET_RAW", "CAP_CHOWN", "..."]
+    }
+  ]
+}
 ```
 
 Supported fields per container: `name`, `version`, `origin`, `network`, `ports`, `caps`, `allow_new_privs`.
@@ -265,7 +263,7 @@ mkpkg.sh                  # Unified container packager (Docker → APK or dir �
 build.sh                  # Container build orchestrator
 index.sh                  # APK feed generator
 config.env                # Build configuration
-containers.yaml           # Container definitions
+containers.json           # Container definitions
 others/public-key.pem     # ECDSA public key for APK verification
 network                   # Sample UCI network config
 paper                     # Project whitepaper

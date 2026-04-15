@@ -1,25 +1,20 @@
 #!/bin/sh
-# Orchestrator: build all containers from containers.yaml for all architectures
-# Usage: build.sh [containers.yaml]
+# Orchestrator: build all containers from containers.json for all architectures
+# Usage: build.sh [containers.json]
 
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 . "$REPO_ROOT/config.env"
 
-list="${1:-$REPO_ROOT/containers.yaml}"
+list="${1:-$REPO_ROOT/containers.json}"
 
 [ -f "$list" ] || {
 	echo "Error: container list not found: $list" >&2
 	exit 1
 }
 
-command -v yq >/dev/null 2>&1 || {
-	echo "Error: yq is required (https://github.com/mikefarah/yq)" >&2
-	exit 1
-}
-
-count=$(yq '.containers | length' "$list")
+count=$(jq '.containers | length' "$list")
 failed=0
 built=0
 
@@ -28,13 +23,13 @@ for arch in $ARCHES; do
 
 	i=0
 	while [ "$i" -lt "$count" ]; do
-		name=$(yq ".containers[$i].name" "$list")
-		version=$(yq ".containers[$i].version" "$list")
-		origin=$(yq ".containers[$i].origin" "$list")
-		ports=$(yq ".containers[$i].ports // [] | join(\",\")" "$list")
-		caps=$(yq ".containers[$i].caps // [] | join(\",\")" "$list")
-		allow_new_privs=$(yq ".containers[$i].allow_new_privs // false" "$list")
-		network=$(yq ".containers[$i].network // \"dedicated\"" "$list")
+		name=$(jq -r ".containers[$i].name" "$list")
+		version=$(jq -r ".containers[$i].version" "$list")
+		origin=$(jq -r ".containers[$i].origin" "$list")
+		ports=$(jq -r ".containers[$i].ports // [] | join(\",\")" "$list")
+		caps=$(jq -r ".containers[$i].caps // [] | join(\",\")" "$list")
+		allow_new_privs=$(jq -r ".containers[$i].allow_new_privs // false" "$list")
+		network=$(jq -r ".containers[$i].network // \"dedicated\"" "$list")
 
 		echo ""
 		echo "================================================================"
