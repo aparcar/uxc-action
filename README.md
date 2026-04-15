@@ -83,7 +83,7 @@ uxc start alpine
 | `container-alpine` | 3.21.3 | Alpine Linux minimal base |
 | `container-debian` | 12.13 | Debian 12 (bookworm) slim base |
 | `container-pihole` | 2026.02.0 | Network-wide ad blocking (DNS) |
-| `container-homeassistant` | 2026.3.4 | Home automation platform |
+
 
 ## Quick Start (Building)
 
